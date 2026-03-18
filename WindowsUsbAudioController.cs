@@ -22,6 +22,27 @@ public class WindowsUsbAudioController : IAudioMuteController
     public bool SupportsVolume => true;
 
     /// <summary>
+    /// 音频状态变化事件
+    /// </summary>
+    public event EventHandler<AudioStateChangedEventArgs>? StateChanged;
+
+    /// <summary>
+    /// 开始监听状态变化
+    /// </summary>
+    public void StartMonitoring()
+    {
+        // Windows USB 原生控制暂不支持状态监听
+    }
+
+    /// <summary>
+    /// 停止监听状态变化
+    /// </summary>
+    public void StopMonitoring()
+    {
+        // Windows USB 原生控制暂不支持状态监听
+    }
+
+    /// <summary>
     /// 枚举所有 USB Audio 设备
     /// </summary>
     public IReadOnlyList<AudioDeviceInfo> EnumerateDevices()

@@ -45,6 +45,16 @@ public class UsbAudioController : IAudioMuteController
     public bool SupportsVolume => _connectedDeviceInfo?.FeatureUnits.Any(f => f.SupportsVolume) ?? false;
 
     /// <summary>
+    /// 音频状态变化事件
+    /// </summary>
+    public event EventHandler<AudioStateChangedEventArgs>? StateChanged;
+    
+    private System.Threading.Timer? _monitoringTimer;
+    private bool _isMonitoring;
+    private bool _lastMuteState;
+    private float _lastVolume;
+
+    /// <summary>
     /// 查找所有 USB Audio 设备
     /// </summary>
     public static List<UsbAudioDeviceInfo> FindAllUsbAudioDevices()
@@ -492,11 +502,65 @@ public class UsbAudioController : IAudioMuteController
         };
     }
 
+    /// <summary>
+    /// 开始监听状态变化（通过轮询实现）
+    /// </summary>
+    public void StartMonitoring()
+    {
+        if (_isMonitoring || _device == null)
+            return;
+        
+        _isMonitoring = true;
+        _lastMuteState = GetMute() ?? false;
+        _lastVolume = GetVolume() ?? 0f;
+        
+        // 每 200ms 轮询一次状态
+        _monitoringTimer = new System.Threading.Timer(_ =>
+        {
+            if (!_isMonitoring || _device == null)
+                return;
+            
+            try
+            {
+                var currentMute = GetMute() ?? _lastMuteState;
+                var currentVolume = GetVolume() ?? _lastVolume;
+                
+                if (currentMute != _lastMuteState || Math.Abs(currentVolume - _lastVolume) > 0.001f)
+                {
+                    _lastMuteState = currentMute;
+                    _lastVolume = currentVolume;
+                    
+                    StateChanged?.Invoke(this, new AudioStateChangedEventArgs
+                    {
+                        IsMuted = currentMute,
+                        Volume = currentVolume,
+                        Device = ConnectedDevice
+                    });
+                }
+            }
+            catch { }
+        }, null, TimeSpan.FromMilliseconds(200), TimeSpan.FromMilliseconds(200));
+    }
+
+    /// <summary>
+    /// 停止监听状态变化
+    /// </summary>
+    public void StopMonitoring()
+    {
+        if (!_isMonitoring)
+            return;
+        
+        _isMonitoring = false;
+        _monitoringTimer?.Dispose();
+        _monitoringTimer = null;
+    }
+
     public void Dispose()
     {
         if (_disposed)
             return;
         
+        StopMonitoring();
         Disconnect();
         _disposed = true;
         UsbDevice.Exit();

@@ -1,6 +1,32 @@
 namespace UsbAudioControl;
 
 /// <summary>
+/// 音频状态变化事件参数
+/// </summary>
+public class AudioStateChangedEventArgs : EventArgs
+{
+    /// <summary>
+    /// 是否静音
+    /// </summary>
+    public bool IsMuted { get; init; }
+    
+    /// <summary>
+    /// 音量 (0.0 - 1.0)
+    /// </summary>
+    public float Volume { get; init; }
+    
+    /// <summary>
+    /// 设备信息
+    /// </summary>
+    public AudioDeviceInfo? Device { get; init; }
+    
+    /// <summary>
+    /// 变化时间
+    /// </summary>
+    public DateTime Timestamp { get; init; } = DateTime.Now;
+}
+
+/// <summary>
 /// 音频静音控制器接口
 /// </summary>
 public interface IAudioMuteController : IDisposable
@@ -79,4 +105,19 @@ public interface IAudioMuteController : IDisposable
     /// 获取音量 (0.0 - 1.0)
     /// </summary>
     float? GetVolume();
+    
+    /// <summary>
+    /// 音频状态变化事件
+    /// </summary>
+    event EventHandler<AudioStateChangedEventArgs>? StateChanged;
+    
+    /// <summary>
+    /// 开始监听状态变化
+    /// </summary>
+    void StartMonitoring();
+    
+    /// <summary>
+    /// 停止监听状态变化
+    /// </summary>
+    void StopMonitoring();
 }

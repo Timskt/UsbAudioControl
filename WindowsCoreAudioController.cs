@@ -12,11 +12,18 @@ public class WindowsCoreAudioController : IAudioMuteController
     private MMDevice? _device;
     private AudioDeviceInfo? _connectedDevice;
     private bool _disposed;
+    private bool _isMonitoring;
+    private AudioEndpointVolumeCallback? _volumeCallback;
 
     public AudioDeviceInfo? ConnectedDevice => _connectedDevice;
     public bool IsConnected => _device != null;
-    public bool SupportsMute => true; // Windows Core Audio 总是支持
+    public bool SupportsMute => true;
     public bool SupportsVolume => true;
+
+    /// <summary>
+    /// 音频状态变化事件
+    /// </summary>
+    public event EventHandler<AudioStateChangedEventArgs>? StateChanged;
 
     /// <summary>
     /// 枚举所有音频输入设备
@@ -101,45 +108,37 @@ public class WindowsCoreAudioController : IAudioMuteController
             return false;
         
         _connectedDevice = CreateDeviceInfo(_device);
+        
+        // 如果之前已经在监听，重新注册
+        if (_isMonitoring)
+        {
+            RegisterVolumeCallback();
+        }
+        
         return true;
     }
 
     /// <summary>
-    /// 连接到第一个可用设备（默认设备）
+    /// 连接到第一个可用设备
     /// </summary>
     public bool ConnectToFirst()
     {
-        return ConnectByDeviceId(null);
+        var devices = EnumerateDevices();
+        if (devices.Count == 0)
+            return false;
+        
+        return Connect(devices[0]);
     }
 
     /// <summary>
-    /// 通过设备名称连接
+    /// 断开连接
     /// </summary>
-    public bool ConnectByName(string name)
-    {
-        Disconnect();
-        
-        using var enumerator = new MMDeviceEnumerator();
-        var devices = enumerator.EnumerateAudioEndPoints(DataFlow.Capture, DeviceState.Active);
-        
-        foreach (var device in devices)
-        {
-            if (device.FriendlyName.Contains(name, StringComparison.OrdinalIgnoreCase))
-            {
-                _device = device;
-                _connectedDevice = CreateDeviceInfo(device);
-                return true;
-            }
-        }
-        
-        return false;
-    }
-
     public void Disconnect()
     {
+        StopMonitoring();
+        _connectedDevice = null;
         _device?.Dispose();
         _device = null;
-        _connectedDevice = null;
     }
 
     /// <summary>
@@ -153,6 +152,8 @@ public class WindowsCoreAudioController : IAudioMuteController
         try
         {
             _device.AudioEndpointVolume.Mute = mute;
+            // 强制刷新设备状态
+            _ = _device.AudioEndpointVolume.Mute;
             return true;
         }
         catch
@@ -238,17 +239,55 @@ public class WindowsCoreAudioController : IAudioMuteController
     }
 
     /// <summary>
-    /// 订阅静音状态变化事件
+    /// 开始监听状态变化
     /// </summary>
-    public void SubscribeMuteChanged(Action<bool> onMuteChanged)
+    public void StartMonitoring()
+    {
+        if (_device == null || _isMonitoring)
+            return;
+        
+        _isMonitoring = true;
+        RegisterVolumeCallback();
+    }
+
+    /// <summary>
+    /// 停止监听状态变化
+    /// </summary>
+    public void StopMonitoring()
+    {
+        if (!_isMonitoring)
+            return;
+        
+        _isMonitoring = false;
+        
+        if (_device != null && _volumeCallback != null)
+        {
+            try
+            {
+                _device.AudioEndpointVolume.OnVolumeNotification -= _volumeCallback.HandleNotification;
+            }
+            catch { }
+        }
+        _volumeCallback = null;
+    }
+
+    private void RegisterVolumeCallback()
     {
         if (_device == null)
             return;
         
-        _device.AudioEndpointVolume.OnVolumeNotification += args =>
+        _volumeCallback = new AudioEndpointVolumeCallback(this);
+        _device.AudioEndpointVolume.OnVolumeNotification += _volumeCallback.HandleNotification;
+    }
+
+    internal void RaiseStateChanged(bool muted, float volume)
+    {
+        StateChanged?.Invoke(this, new AudioStateChangedEventArgs
         {
-            onMuteChanged(args.Muted);
-        };
+            IsMuted = muted,
+            Volume = volume,
+            Device = _connectedDevice
+        });
     }
 
     public void Dispose()
@@ -258,5 +297,23 @@ public class WindowsCoreAudioController : IAudioMuteController
         
         Disconnect();
         _disposed = true;
+    }
+
+    /// <summary>
+    /// 内部回调类，用于处理音量通知
+    /// </summary>
+    private class AudioEndpointVolumeCallback
+    {
+        private readonly WindowsCoreAudioController _controller;
+
+        public AudioEndpointVolumeCallback(WindowsCoreAudioController controller)
+        {
+            _controller = controller;
+        }
+
+        public void HandleNotification(AudioVolumeNotificationData data)
+        {
+            _controller.RaiseStateChanged(data.Muted, data.MasterVolume);
+        }
     }
 }

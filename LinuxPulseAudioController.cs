@@ -18,6 +18,16 @@ public class LinuxPulseAudioController : IAudioMuteController
     public bool SupportsVolume => true;
 
     /// <summary>
+    /// 音频状态变化事件
+    /// </summary>
+    public event EventHandler<AudioStateChangedEventArgs>? StateChanged;
+    
+    private System.Threading.Timer? _monitoringTimer;
+    private bool _isMonitoring;
+    private bool _lastMuteState;
+    private float _lastVolume;
+
+    /// <summary>
     /// 枚举所有音频输入设备
     /// </summary>
     public IReadOnlyList<AudioDeviceInfo> EnumerateDevices()
@@ -267,11 +277,64 @@ public class LinuxPulseAudioController : IAudioMuteController
         }
     }
 
+    /// <summary>
+    /// 开始监听状态变化（通过轮询实现）
+    /// </summary>
+    public void StartMonitoring()
+    {
+        if (_isMonitoring || string.IsNullOrEmpty(_deviceName))
+            return;
+        
+        _isMonitoring = true;
+        _lastMuteState = GetMute() ?? false;
+        _lastVolume = GetVolume() ?? 0f;
+        
+        _monitoringTimer = new System.Threading.Timer(_ =>
+        {
+            if (!_isMonitoring || string.IsNullOrEmpty(_deviceName))
+                return;
+            
+            try
+            {
+                var currentMute = GetMute() ?? _lastMuteState;
+                var currentVolume = GetVolume() ?? _lastVolume;
+                
+                if (currentMute != _lastMuteState || Math.Abs(currentVolume - _lastVolume) > 0.001f)
+                {
+                    _lastMuteState = currentMute;
+                    _lastVolume = currentVolume;
+                    
+                    StateChanged?.Invoke(this, new AudioStateChangedEventArgs
+                    {
+                        IsMuted = currentMute,
+                        Volume = currentVolume,
+                        Device = _connectedDevice
+                    });
+                }
+            }
+            catch { }
+        }, null, TimeSpan.FromMilliseconds(200), TimeSpan.FromMilliseconds(200));
+    }
+
+    /// <summary>
+    /// 停止监听状态变化
+    /// </summary>
+    public void StopMonitoring()
+    {
+        if (!_isMonitoring)
+            return;
+        
+        _isMonitoring = false;
+        _monitoringTimer?.Dispose();
+        _monitoringTimer = null;
+    }
+
     public void Dispose()
     {
         if (_disposed)
             return;
         
+        StopMonitoring();
         Disconnect();
         _disposed = true;
     }
