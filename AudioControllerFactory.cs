@@ -46,6 +46,14 @@ public static class AudioControllerFactory
     }
 
     /// <summary>
+    /// 创建 Windows 原生 USB Audio 控制器（使用 Windows API 直接访问 USB 设备）
+    /// </summary>
+    public static WindowsUsbAudioController CreateWindowsUsbAudio()
+    {
+        return new WindowsUsbAudioController();
+    }
+
+    /// <summary>
     /// 创建 Linux PulseAudio 控制器
     /// </summary>
     public static LinuxPulseAudioController CreateLinuxPulseAudio()

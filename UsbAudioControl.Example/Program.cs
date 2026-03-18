@@ -1,75 +1,77 @@
 using UsbAudioControl;
 
-Console.WriteLine("=== 音频静音控制测试 (USB Audio 优先) ===\n");
+Console.WriteLine("=== 音频静音控制测试 ===\n");
 
-// 先尝试 USB Audio 直连
-Console.WriteLine("=== 尝试 USB Audio 直连 ===");
-using var usbController = AudioControllerFactory.CreateUsbAudio();
-
-var usbDevices = usbController.EnumerateDevices();
-Console.WriteLine($"USB Audio 设备数量: {usbDevices.Count}");
-
-if (usbDevices.Count > 0)
+// 显示可用的控制方案
+Console.WriteLine("可用控制方案:");
+var controllers = AudioControllerFactory.GetAvailableControllers();
+foreach (var (type, desc, available) in controllers)
 {
-    for (int i = 0; i < usbDevices.Count; i++)
-    {
-        var d = usbDevices[i];
-        Console.WriteLine($"  [{i}] {d.Name ?? "Unknown"}");
-        Console.WriteLine($"      VID:PID: 0x{d.VendorId:X4}:0x{d.ProductId:X4}");
-    }
+    Console.WriteLine($"  [{(available ? "Y" : "N")}] {type}: {desc}");
+}
+Console.WriteLine();
+
+// 测试 Windows 原生 USB 枚举（需要管理员权限）
+Console.WriteLine("=== 测试 Windows 原生 USB 枚举 ===");
+try
+{
+    using var winUsbController = new WindowsUsbAudioController();
+    var usbDevices = winUsbController.EnumerateDevices();
+    Console.WriteLine($"找到 {usbDevices.Count} 个 USB 设备:");
     
-    if (usbController.ConnectToFirst())
+    foreach (var d in usbDevices)
     {
-        Console.WriteLine($"\nUSB Audio 连接成功: {usbController.ConnectedDevice?.Name}");
-        TestController(usbController);
+        Console.WriteLine($"  - {d.Name ?? "Unknown"}");
+        Console.WriteLine($"    DeviceId: {d.DeviceId}");
+        if (d.VendorId != 0)
+        {
+            Console.WriteLine($"    VID:PID: 0x{d.VendorId:X4}:0x{d.ProductId:X4}");
+        }
+    }
+}
+catch (Exception ex)
+{
+    Console.WriteLine($"USB 枚举错误: {ex.Message}");
+    if (ex.InnerException != null)
+    {
+        Console.WriteLine($"  内部异常: {ex.InnerException.Message}");
+    }
+}
+
+Console.WriteLine("\n=== 使用最佳方案测试 ===");
+try
+{
+    using var controller = AudioControllerFactory.CreateBest();
+    Console.WriteLine($"控制器类型: {controller.GetType().Name}");
+
+    if (!controller.ConnectToFirst())
+    {
+        Console.WriteLine("连接失败！");
         return;
     }
-}
 
-Console.WriteLine("USB Audio 直连失败，尝试系统 API...\n");
+    Console.WriteLine($"已连接: {controller.ConnectedDevice?.Name ?? "Unknown"}\n");
 
-// 回退到系统 API
-Console.WriteLine("=== 使用系统音频 API ===");
-using var systemController = AudioControllerFactory.CreateWindowsCoreAudio();
-
-var devices = systemController.EnumerateDevices();
-Console.WriteLine($"系统音频设备数量: {devices.Count}");
-
-for (int i = 0; i < devices.Count; i++)
-{
-    var d = devices[i];
-    Console.WriteLine($"  [{i}] {d.Name ?? "Unknown"}");
-}
-
-if (systemController.ConnectToFirst())
-{
-    Console.WriteLine($"\n系统 API 连接成功: {systemController.ConnectedDevice?.Name}");
-    TestController(systemController);
-}
-else
-{
-    Console.WriteLine("没有找到任何可用的音频输入设备！");
-}
-
-static void TestController(IAudioMuteController controller)
-{
-    Console.WriteLine("\n=== 测试控制 ===");
-    
+    // 测试控制
     var currentMute = controller.GetMute();
     var currentVolume = controller.GetVolume();
     Console.WriteLine($"当前静音: {(currentMute == true ? "是" : currentMute == false ? "否" : "未知")}");
     Console.WriteLine($"当前音量: {(currentVolume.HasValue ? $"{currentVolume.Value:P0}" : "未知")}");
-    
+
     Console.WriteLine("\n切换静音...");
     var newMute = controller.ToggleMute();
     Console.WriteLine($"切换后: {(newMute == true ? "静音" : newMute == false ? "未静音" : "失败")}");
-    
+
     // 恢复
     if (currentMute.HasValue && newMute != currentMute)
     {
         controller.SetMute(currentMute.Value);
         Console.WriteLine($"已恢复: {(currentMute.Value ? "静音" : "未静音")}");
     }
-    
+
     Console.WriteLine("\n测试完成！");
+}
+catch (Exception ex)
+{
+    Console.WriteLine($"错误: {ex.Message}");
 }
