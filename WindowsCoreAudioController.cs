@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using NAudio.CoreAudioApi;
 
 namespace UsbAudioControl;
@@ -64,9 +65,9 @@ public class WindowsCoreAudioController : IAudioMuteController
         return device != null ? CreateDeviceInfo(device) : null;
     }
 
-    private static AudioDeviceInfo CreateDeviceInfo(MMDevice device)
+    private AudioDeviceInfo CreateDeviceInfo(MMDevice device)
     {
-        return new AudioDeviceInfo
+        var info = new AudioDeviceInfo
         {
             Name = device.FriendlyName,
             DeviceId = device.ID,
@@ -74,6 +75,177 @@ public class WindowsCoreAudioController : IAudioMuteController
             SupportsMute = true,
             SupportsVolume = true
         };
+        
+        // 尝试获取 USB 设备信息
+        try
+        {
+            var usbInfo = GetUsbDeviceInfo(device.ID);
+            if (usbInfo != null)
+            {
+                info = info with
+                {
+                    VendorId = usbInfo.Value.VendorId,
+                    ProductId = usbInfo.Value.ProductId,
+                    UsbDeviceInstanceId = usbInfo.Value.InstanceId
+                };
+            }
+        }
+        catch
+        {
+            // 忽略获取 USB 信息失败
+        }
+        
+        return info;
+    }
+    
+    /// <summary>
+    /// 从音频端点 ID 获取 USB 设备信息
+    /// </summary>
+    private static (int VendorId, int ProductId, string InstanceId)? GetUsbDeviceInfo(string endpointId)
+    {
+        if (string.IsNullOrEmpty(endpointId))
+            return null;
+        
+        // 音频端点 ID 格式: {0.0.1.00000000}.{GUID}
+        // 需要通过 SetupAPI 查找对应的 USB 设备
+        
+        try
+        {
+            // 枚举音频输入设备接口
+            var audioCaptureGuid = new Guid("2eef81be-33fa-4800-9670-1cd474972c3f"); // GUID_DEVINTERFACE_AUDIO_CAPTURE
+            
+            IntPtr hDevInfo = NativeMethods.SetupDiGetClassDevs(
+                ref audioCaptureGuid,
+                IntPtr.Zero,
+                IntPtr.Zero,
+                NativeMethods.DIGCF_PRESENT | NativeMethods.DIGCF_DEVICEINTERFACE);
+            
+            if (hDevInfo == new IntPtr(-1) || hDevInfo == IntPtr.Zero)
+                return null;
+            
+            try
+            {
+                int index = 0;
+                while (true)
+                {
+                    var deviceInterfaceData = new NativeMethods.SP_DEVICE_INTERFACE_DATA();
+                    deviceInterfaceData.cbSize = Marshal.SizeOf(typeof(NativeMethods.SP_DEVICE_INTERFACE_DATA));
+                    
+                    if (!NativeMethods.SetupDiEnumDeviceInterfaces(
+                        hDevInfo,
+                        IntPtr.Zero,
+                        ref audioCaptureGuid,
+                        index,
+                        ref deviceInterfaceData))
+                    {
+                        break;
+                    }
+                    index++;
+                    
+                    // 获取设备接口详情
+                    uint requiredSize = 0;
+                    NativeMethods.SetupDiGetDeviceInterfaceDetail(
+                        hDevInfo, ref deviceInterfaceData, IntPtr.Zero, 0, ref requiredSize, IntPtr.Zero);
+                    
+                    if (requiredSize == 0)
+                        continue;
+                    
+                    IntPtr detailDataBuffer = Marshal.AllocHGlobal((int)requiredSize);
+                    try
+                    {
+                        int cbSize = IntPtr.Size == 8 ? 8 : 5;
+                        Marshal.WriteInt32(detailDataBuffer, cbSize);
+                        
+                        var devInfoData = new NativeMethods.SP_DEVINFO_DATA();
+                        devInfoData.cbSize = Marshal.SizeOf(typeof(NativeMethods.SP_DEVINFO_DATA));
+                        
+                        if (NativeMethods.SetupDiGetDeviceInterfaceDetail(
+                            hDevInfo,
+                            ref deviceInterfaceData,
+                            detailDataBuffer,
+                            requiredSize,
+                            ref requiredSize,
+                            ref devInfoData))
+                        {
+                            // 获取设备路径
+                            string? devicePath = Marshal.PtrToStringAuto(detailDataBuffer + cbSize);
+                            
+                            // 检查设备路径是否匹配端点 ID
+                            if (!string.IsNullOrEmpty(devicePath) && devicePath.Contains(endpointId, StringComparison.OrdinalIgnoreCase))
+                            {
+                                // 获取设备实例 ID
+                                uint instanceIdSize = 0;
+                                NativeMethods.SetupDiGetDeviceInstanceId(hDevInfo, ref devInfoData, IntPtr.Zero, 0, ref instanceIdSize);
+                                
+                                if (instanceIdSize > 0)
+                                {
+                                    var instanceIdPtr = Marshal.AllocHGlobal((int)instanceIdSize * 2);
+                                    try
+                                    {
+                                        NativeMethods.SetupDiGetDeviceInstanceId(
+                                            hDevInfo, ref devInfoData, instanceIdPtr, instanceIdSize, ref instanceIdSize);
+                                        string? instanceId = Marshal.PtrToStringAuto(instanceIdPtr);
+                                        
+                                        if (!string.IsNullOrEmpty(instanceId))
+                                        {
+                                            return ParseUsbInstanceId(instanceId);
+                                        }
+                                    }
+                                    finally
+                                    {
+                                        Marshal.FreeHGlobal(instanceIdPtr);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    finally
+                    {
+                        Marshal.FreeHGlobal(detailDataBuffer);
+                    }
+                }
+            }
+            finally
+            {
+                NativeMethods.SetupDiDestroyDeviceInfoList(hDevInfo);
+            }
+        }
+        catch
+        {
+            // 忽略错误
+        }
+        
+        return null;
+    }
+    
+    /// <summary>
+    /// 解析 USB 设备实例 ID (如: USB\VID_1FC9&PID_826B&MI_00\6&360496AE&0&0000)
+    /// </summary>
+    private static (int VendorId, int ProductId, string InstanceId)? ParseUsbInstanceId(string instanceId)
+    {
+        if (string.IsNullOrEmpty(instanceId))
+            return null;
+        
+        // 检查是否是 USB 设备
+        if (!instanceId.StartsWith("USB\\", StringComparison.OrdinalIgnoreCase))
+            return null;
+        
+        // 解析 VID 和 PID
+        var vidMatch = System.Text.RegularExpressions.Regex.Match(
+            instanceId, @"VID_([0-9a-fA-F]{4})", 
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        var pidMatch = System.Text.RegularExpressions.Regex.Match(
+            instanceId, @"PID_([0-9a-fA-F]{4})", 
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        
+        if (!vidMatch.Success || !pidMatch.Success)
+            return null;
+        
+        return (
+            Convert.ToInt32(vidMatch.Groups[1].Value, 16),
+            Convert.ToInt32(pidMatch.Groups[1].Value, 16),
+            instanceId
+        );
     }
 
     /// <summary>
@@ -126,6 +298,56 @@ public class WindowsCoreAudioController : IAudioMuteController
             
             return true;
         }
+    }
+    
+    /// <summary>
+    /// 通过 USB VID/PID 连接设备
+    /// </summary>
+    /// <param name="vendorId">USB 厂商 ID (十六进制，如 0x1FC9)</param>
+    /// <param name="productId">USB 产品 ID (十六进制，如 0x826B)</param>
+    /// <returns>是否连接成功</returns>
+    public bool ConnectByVidPid(int vendorId, int productId)
+    {
+        var devices = EnumerateDevices();
+        var target = devices.FirstOrDefault(d => d.VendorId == vendorId && d.ProductId == productId);
+        
+        if (target == null)
+            return false;
+        
+        return ConnectByDeviceId(target.DeviceId);
+    }
+    
+    /// <summary>
+    /// 通过 VID:PID 字符串连接设备 (如 "1FC9:826B")
+    /// </summary>
+    public bool ConnectByVidPid(string vidPid)
+    {
+        if (string.IsNullOrEmpty(vidPid))
+            return false;
+        
+        var parts = vidPid.Split(':');
+        if (parts.Length != 2)
+            return false;
+        
+        try
+        {
+            int vid = Convert.ToInt32(parts[0], 16);
+            int pid = Convert.ToInt32(parts[1], 16);
+            return ConnectByVidPid(vid, pid);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+    
+    /// <summary>
+    /// 查找指定 VID/PID 的设备
+    /// </summary>
+    public AudioDeviceInfo? FindDevice(int vendorId, int productId)
+    {
+        var devices = EnumerateDevices();
+        return devices.FirstOrDefault(d => d.VendorId == vendorId && d.ProductId == productId);
     }
 
     /// <summary>

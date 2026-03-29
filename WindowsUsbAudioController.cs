@@ -343,7 +343,7 @@ public class WindowsUsbAudioController : IAudioMuteController
     }
 }
 
-internal static class NativeMethods
+internal static partial class NativeMethods
 {
     public const uint DIGCF_PRESENT = 0x00000002;
     public const uint DIGCF_DEVICEINTERFACE = 0x00000010;
@@ -369,12 +369,34 @@ internal static class NativeMethods
     /// </summary>
     public static readonly Guid GUID_DEVINTERFACE_AUDIO_CAPTURE = new("2CB8C062-3F6F-4D8C-9D5E-4B0D7FC4D7BE");
 
-    [StructLayout(LayoutKind.Sequential)]
-    public class SP_DEVICE_INTERFACE_DATA
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    public struct SP_DEVICE_INTERFACE_DATA
     {
         public int cbSize;
-        public Guid InterfaceClassGuid;
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 16)]
+        public byte[] InterfaceClassGuidInternal;
         public int Flags;
+        public IntPtr Reserved;
+        
+        public Guid InterfaceClassGuid
+        {
+            get
+            {
+                return new Guid(InterfaceClassGuidInternal);
+            }
+            set
+            {
+                InterfaceClassGuidInternal = value.ToByteArray();
+            }
+        }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public class SP_DEVINFO_DATA
+    {
+        public int cbSize;
+        public Guid ClassGuid;
+        public uint DevInst;
         public IntPtr Reserved;
     }
 
@@ -402,11 +424,30 @@ internal static class NativeMethods
         IntPtr DeviceInterfaceDetailData,
         uint DeviceInterfaceDetailDataSize,
         ref uint RequiredSize,
+        ref SP_DEVINFO_DATA DeviceInfoData);
+
+    [DllImport("setupapi.dll", SetLastError = true, CharSet = CharSet.Auto)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool SetupDiGetDeviceInterfaceDetail(
+        IntPtr DeviceInfoSet,
+        ref SP_DEVICE_INTERFACE_DATA DeviceInterfaceData,
+        IntPtr DeviceInterfaceDetailData,
+        uint DeviceInterfaceDetailDataSize,
+        ref uint RequiredSize,
         IntPtr DeviceInfoData);
 
     [DllImport("setupapi.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool SetupDiDestroyDeviceInfoList(IntPtr DeviceInfoSet);
+
+    [DllImport("setupapi.dll", SetLastError = true, CharSet = CharSet.Auto)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool SetupDiGetDeviceInstanceId(
+        IntPtr DeviceInfoSet,
+        ref SP_DEVINFO_DATA DeviceInfoData,
+        IntPtr DeviceInstanceId,
+        uint DeviceInstanceIdSize,
+        ref uint RequiredSize);
 
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Auto)]
     public static extern SafeFileHandle CreateFile(

@@ -27,6 +27,38 @@ public class AudioStateChangedEventArgs : EventArgs
 }
 
 /// <summary>
+/// 物理按钮类型
+/// </summary>
+public enum PhysicalButtonType
+{
+    Mute,
+    VolumeUp,
+    VolumeDown,
+    Unknown
+}
+
+/// <summary>
+/// 物理按钮事件参数
+/// </summary>
+public class PhysicalButtonEventArgs : EventArgs
+{
+    /// <summary>
+    /// 按钮类型
+    /// </summary>
+    public PhysicalButtonType ButtonType { get; init; }
+    
+    /// <summary>
+    /// 是否按下
+    /// </summary>
+    public bool IsPressed { get; init; }
+    
+    /// <summary>
+    /// 新的静音状态（仅当 ButtonType 为 Mute 时有效）
+    /// </summary>
+    public bool? NewMuteState { get; init; }
+}
+
+/// <summary>
 /// 音频静音控制器接口
 /// </summary>
 public interface IAudioMuteController : IDisposable
@@ -50,6 +82,11 @@ public interface IAudioMuteController : IDisposable
     /// 是否支持音量控制
     /// </summary>
     bool SupportsVolume { get; }
+    
+    /// <summary>
+    /// 是否支持 LED 控制（HID 设备）
+    /// </summary>
+    bool SupportsLed => false;
     
     /// <summary>
     /// 枚举所有可用的音频输入设备

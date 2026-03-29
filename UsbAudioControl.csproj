@@ -9,6 +9,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="hidlibrary" Version="3.3.40" />
     <PackageReference Include="LibUsbDotNet" Version="2.2.75" />
     <PackageReference Include="NAudio" Version="2.2.1" />
   </ItemGroup>
