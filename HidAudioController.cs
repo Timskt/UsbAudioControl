@@ -135,7 +135,6 @@ public class HidAudioController : IAudioMuteController
         
         // 连接后默认发送启用命令，同步设备状态
         SendMuteCommand(false);
-        Console.WriteLine("已发送初始启用命令");
         
         return true;
     }
@@ -206,7 +205,6 @@ public class HidAudioController : IAudioMuteController
         
         // 连接后默认发送启用命令，同步设备状态
         SendMuteCommand(false);
-        Console.WriteLine("已发送初始启用命令");
         
         return true;
     }
@@ -221,35 +219,25 @@ public class HidAudioController : IAudioMuteController
             using var enumerator = new MMDeviceEnumerator();
             var captureDevices = enumerator.EnumerateAudioEndPoints(DataFlow.Capture, DeviceState.Active);
             
-            Console.WriteLine("查找对应的 Core Audio 设备...");
-            
             // 查找匹配的设备
             foreach (var device in captureDevices)
             {
-                Console.WriteLine($"  发现设备: {device.FriendlyName}");
-                
-                // 通过设备名称或 VID/PID 匹配
                 if (device.FriendlyName?.Contains("Hamedal") == true ||
                     device.FriendlyName?.Contains("Speak") == true ||
                     device.FriendlyName?.Contains("A20") == true ||
                     device.FriendlyName?.Contains("回音消除") == true)
                 {
                     _audioDevice = device;
-                    Console.WriteLine($"  已匹配: {device.FriendlyName}");
                     break;
                 }
             }
             
             // 如果没找到，使用默认设备
-            if (_audioDevice == null)
-            {
-                _audioDevice = enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Communications);
-                Console.WriteLine($"  使用默认设备: {_audioDevice?.FriendlyName}");
-            }
+            _audioDevice ??= enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Communications);
         }
-        catch (Exception ex)
+        catch
         {
-            Console.WriteLine($"Core Audio 连接失败: {ex.Message}");
+            // Core Audio 连接失败不影响 HID 控制
         }
     }
 
@@ -337,21 +325,14 @@ public class HidAudioController : IAudioMuteController
     private bool? GetMuteFromSystem()
     {
         if (_audioDevice == null)
-        {
-            Console.WriteLine("[调试] _audioDevice 为空");
             return null;
-        }
         
         try
         {
-            var mute = _audioDevice.AudioEndpointVolume.Mute;
-            var volume = _audioDevice.AudioEndpointVolume.MasterVolumeLevelScalar;
-            Console.WriteLine($"[调试] Core Audio: 设备={_audioDevice.FriendlyName}, 静音={mute}, 音量={volume:P0}");
-            return mute;
+            return _audioDevice.AudioEndpointVolume.Mute;
         }
-        catch (Exception ex)
+        catch
         {
-            Console.WriteLine($"[调试] 读取 Core Audio 失败: {ex.Message}");
             return null;
         }
     }
@@ -434,8 +415,6 @@ public class HidAudioController : IAudioMuteController
             {
                 PollHidDevice();
             }, null, TimeSpan.FromMilliseconds(50), TimeSpan.FromMilliseconds(50));
-            
-            Console.WriteLine("已开始监听 HID 物理按键");
         }
     }
 
@@ -471,8 +450,6 @@ public class HidAudioController : IAudioMuteController
             
             if (report != null && report.Data != null && report.Data.Length > 0)
             {
-                Console.WriteLine($"[HID 输入] Report ID={report.ReportId}, Data={BitConverter.ToString(report.Data, 0, Math.Min(8, report.Data.Length))}");
-                
                 ParseHidReport(report.ReportId, report.Data);
             }
         }
@@ -495,8 +472,6 @@ public class HidAudioController : IAudioMuteController
             // 硬件静音状态切换 - 维护本地状态
             _lastMuteState = !_lastMuteState;
             _lastVolume = GetVolumeFromSystem() ?? _lastVolume;
-            
-            Console.WriteLine($"[调试] 物理按键按下，切换本地状态: 静音={_lastMuteState}");
             
             // 触发事件，告知用户当前状态
             StateChanged?.Invoke(this, new AudioStateChangedEventArgs

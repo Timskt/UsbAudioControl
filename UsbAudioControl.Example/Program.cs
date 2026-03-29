@@ -1,4 +1,3 @@
-using HidLibrary;
 using UsbAudioControl;
 
 Console.WriteLine("=== Hamedal Speak A20 静音控制 ===\n");
