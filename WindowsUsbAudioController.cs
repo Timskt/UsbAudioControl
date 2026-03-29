@@ -23,8 +23,11 @@ public class WindowsUsbAudioController : IAudioMuteController
 
     /// <summary>
     /// 音频状态变化事件
+    /// 注意：Windows USB 原生控制暂不支持状态监听
     /// </summary>
+#pragma warning disable CS0067
     public event EventHandler<AudioStateChangedEventArgs>? StateChanged;
+#pragma warning restore CS0067
 
     /// <summary>
     /// 开始监听状态变化
@@ -244,10 +247,14 @@ public class WindowsUsbAudioController : IAudioMuteController
     public bool ConnectToFirst()
     {
         var devices = EnumerateUsbDevices();
-        if (devices.Count == 0 || string.IsNullOrEmpty(devices[0].DevicePath))
+        if (devices.Count == 0)
             return false;
         
-        return ConnectByPath(devices[0].DevicePath);
+        var devicePath = devices[0].DevicePath;
+        if (string.IsNullOrEmpty(devicePath))
+            return false;
+        
+        return ConnectByPath(devicePath);
     }
 
     public bool ConnectByPath(string devicePath)

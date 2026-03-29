@@ -62,6 +62,22 @@ public static class AudioControllerFactory
     }
 
     /// <summary>
+    /// 创建 HID 音频控制器（用于控制物理按钮和 LED）
+    /// </summary>
+    public static HidAudioController CreateHidAudio(HidAudioConfig? config = null)
+    {
+        return new HidAudioController(config ?? HidAudioConfig.Default);
+    }
+
+    /// <summary>
+    /// 自动检测并创建 HID 音频控制器
+    /// </summary>
+    public static HidAudioController? CreateHidAudioAuto()
+    {
+        return HidAudioController.ConnectAuto();
+    }
+
+    /// <summary>
     /// 获取所有可用的控制方案
     /// </summary>
     public static IReadOnlyList<(AudioControllerType Type, string Description, bool Available)> GetAvailableControllers()
@@ -83,6 +99,11 @@ public static class AudioControllerFactory
         // USB Audio (需要检查是否有设备)
         result.Add((AudioControllerType.UsbAudio, 
             "USB Audio Class 协议 - 直接控制 USB 设备，需要 libusb 驱动", 
+            true));
+        
+        // HID Audio (物理按钮和 LED 控制)
+        result.Add((AudioControllerType.HidAudio,
+            "HID 音频设备 - 控制物理按钮和 LED 指示灯",
             true));
         
         return result;
