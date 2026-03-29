@@ -4,13 +4,236 @@ using NAudio.CoreAudioApi;
 namespace UsbAudioControl;
 
 /// <summary>
+/// HID 音频设备配置
+/// </summary>
+public class HidAudioConfig
+{
+    /// <summary>
+    /// 配置名称
+    /// </summary>
+    public string Name { get; init; } = "Default";
+    
+    /// <summary>
+    /// USB 厂商 ID (VID)
+    /// </summary>
+    public int VendorId { get; init; } = 0x1FC9;
+    
+    /// <summary>
+    /// USB 产品 ID (PID)
+    /// </summary>
+    public int ProductId { get; init; } = 0x826B;
+    
+    /// <summary>
+    /// HID 报告 ID
+    /// </summary>
+    public byte ReportId { get; init; } = 3;
+    
+    /// <summary>
+    /// 静音命令数据
+    /// </summary>
+    public byte MuteOnData { get; init; } = 0x05;
+    
+    /// <summary>
+    /// 取消静音命令数据
+    /// </summary>
+    public byte MuteOffData { get; init; } = 0x01;
+    
+    /// <summary>
+    /// 按键报告 ID (用于监听物理按键)
+    /// </summary>
+    public byte ButtonReportId { get; init; } = 1;
+    
+    /// <summary>
+    /// 按键按下数据
+    /// </summary>
+    public byte ButtonPressData { get; init; } = 0x07;
+    
+    /// <summary>
+    /// 设备名称关键词 (用于匹配 Core Audio 设备)
+    /// </summary>
+    public string[]? DeviceNameKeywords { get; init; }
+    
+    /// <summary>
+    /// 默认配置
+    /// </summary>
+    public static HidAudioConfig Default => new();
+    
+    /// <summary>
+    /// 生成唯一标识 (VID:PID)
+    /// </summary>
+    public string DeviceId => $"{VendorId:X4}:{ProductId:X4}";
+}
+
+/// <summary>
+/// HID 音频设备配置注册表
+/// 添加新设备配置到这里
+/// </summary>
+public static class HidAudioConfigRegistry
+{
+    /// <summary>
+    /// 所有已注册的设备配置
+    /// 添加新麦克风时，在这里添加配置
+    /// </summary>
+    public static readonly Dictionary<string, HidAudioConfig> Configs = new()
+    {
+        // Hamedal Speak A20
+        ["1FC9:826B"] = new HidAudioConfig
+        {
+            Name = "Hamedal Speak A20",
+            VendorId = 0x1FC9,
+            ProductId = 0x826B,
+            ReportId = 3,
+            MuteOnData = 0x05,
+            MuteOffData = 0x01,
+            ButtonReportId = 1,
+            ButtonPressData = 0x07,
+            DeviceNameKeywords = new[] { "Hamedal", "Speak", "A20", "回音消除" }
+        },
+        
+        // 添加更多设备配置示例:
+        // ["1234:5678"] = new HidAudioConfig
+        // {
+        //     Name = "其他品牌麦克风",
+        //     VendorId = 0x1234,
+        //     ProductId = 0x5678,
+        //     ReportId = 2,
+        //     MuteOnData = 0x01,
+        //     MuteOffData = 0x00,
+        //     ButtonReportId = 1,
+        //     ButtonPressData = 0x01,
+        //     DeviceNameKeywords = new[] { "Other", "Mic" }
+        // },
+    };
+    
+    /// <summary>
+    /// 根据 VID/PID 获取配置
+    /// </summary>
+    public static HidAudioConfig? GetConfig(int vendorId, int productId)
+    {
+        var key = $"{vendorId:X4}:{productId:X4}";
+        return Configs.TryGetValue(key, out var config) ? config : null;
+    }
+    
+    /// <summary>
+    /// 根据 VID/PID 获取配置
+    /// </summary>
+    public static HidAudioConfig? GetConfig(string deviceId)
+    {
+        return Configs.TryGetValue(deviceId.ToUpper(), out var config) ? config : null;
+    }
+    
+    /// <summary>
+    /// 添加或更新配置
+    /// </summary>
+    public static void Register(HidAudioConfig config)
+    {
+        Configs[config.DeviceId] = config;
+    }
+    
+    /// <summary>
+    /// 获取所有已注册的设备 ID
+    /// </summary>
+    public static IEnumerable<string> GetRegisteredDeviceIds() => Configs.Keys;
+    
+    /// <summary>
+    /// 获取当前系统默认输入麦克风，返回匹配的配置
+    /// </summary>
+    public static HidAudioConfig? GetDefaultMicrophoneConfig()
+    {
+        try
+        {
+            using var enumerator = new MMDeviceEnumerator();
+            var defaultDevice = enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Communications);
+            
+            if (defaultDevice == null)
+                return null;
+            
+            var deviceName = defaultDevice.FriendlyName;
+            Console.WriteLine($"当前默认麦克风: {deviceName}");
+            
+            // 方式1: 通过设备路径提取 VID/PID
+            var (vid, pid) = ExtractVidPidFromDevicePath(defaultDevice.ID);
+            
+            if (vid.HasValue && pid.HasValue)
+            {
+                Console.WriteLine($"提取 VID/PID: {vid.Value:X4}:{pid.Value:X4}");
+                var config = GetConfig(vid.Value, pid.Value);
+                if (config != null)
+                    return config;
+            }
+            
+            // 方式2: 通过设备名称关键词匹配
+            foreach (var cfg in Configs.Values)
+            {
+                if (cfg.DeviceNameKeywords != null)
+                {
+                    if (cfg.DeviceNameKeywords.Any(k => deviceName?.Contains(k, StringComparison.OrdinalIgnoreCase) == true))
+                    {
+                        Console.WriteLine($"通过名称匹配: {cfg.Name}");
+                        return cfg;
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"获取默认麦克风失败: {ex.Message}");
+        }
+        
+        return null;
+    }
+    
+    /// <summary>
+    /// 从设备路径中提取 VID 和 PID
+    /// </summary>
+    private static (int? Vid, int? Pid) ExtractVidPidFromDevicePath(string devicePath)
+    {
+        if (string.IsNullOrEmpty(devicePath))
+            return (null, null);
+        
+        var vidMatch = System.Text.RegularExpressions.Regex.Match(
+            devicePath, @"VID_([0-9a-fA-F]{4})", 
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        var pidMatch = System.Text.RegularExpressions.Regex.Match(
+            devicePath, @"PID_([0-9a-fA-F]{4})", 
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        
+        if (!vidMatch.Success || !pidMatch.Success)
+            return (null, null);
+        
+        return (
+            Convert.ToInt32(vidMatch.Groups[1].Value, 16),
+            Convert.ToInt32(pidMatch.Groups[1].Value, 16)
+        );
+    }
+    
+    /// <summary>
+    /// 扫描系统中的 HID 设备，返回匹配的配置
+    /// </summary>
+    public static List<(HidAudioConfig Config, string DevicePath)> ScanDevices()
+    {
+        var result = new List<(HidAudioConfig, string)>();
+        
+        foreach (var config in Configs.Values)
+        {
+            var devices = HidDevices.Enumerate(config.VendorId, config.ProductId)
+                .Where(d => d.Capabilities.OutputReportByteLength > 0)
+                .ToList();
+            
+            foreach (var device in devices)
+            {
+                result.Add((config, device.DevicePath));
+                device.CloseDevice();
+            }
+        }
+        
+        return result;
+    }
+}
+
+/// <summary>
 /// HID 音频设备控制器
 /// 使用 HidLibrary 控制 LED，使用 Core Audio 监听系统静音状态
-/// 
-/// 设备: Hamedal Speak A20
-/// - VID: 0x1FC9, PID: 0x826B
-/// - 静音: Report ID=3, Data=0x05
-/// - 取消静音: Report ID=3, Data=0x01
 /// </summary>
 public class HidAudioController : IAudioMuteController
 {
@@ -23,13 +246,16 @@ public class HidAudioController : IAudioMuteController
     private float _lastVolume;
     private readonly object _lock = new();
     private System.Threading.Timer? _hidPollingTimer;
+    private readonly HidAudioConfig _config;
+    private DateTime _lastButtonPressTime = DateTime.MinValue;
+    private const int ButtonDebounceMs = 300; // 按键防抖时间 (毫秒)
+    private DateTime _connectTime = DateTime.MinValue;
+    private const int IgnoreReportsAfterConnectMs = 500; // 连接后忽略报告的时间 (毫秒)
 
-    // 设备协议常量
-    private const int VendorId = 0x1FC9;
-    private const int ProductId = 0x826B;
-    private const byte ReportId = 3;
-    private const byte MuteOnData = 0x05;
-    private const byte MuteOffData = 0x01;
+    /// <summary>
+    /// 当前配置
+    /// </summary>
+    public HidAudioConfig Config => _config;
 
     public AudioDeviceInfo? ConnectedDevice => _connectedDeviceInfo?.ToAudioDeviceInfo();
     public bool IsConnected => _hidDevice != null && _hidDevice.IsConnected;
@@ -41,13 +267,36 @@ public class HidAudioController : IAudioMuteController
     public event EventHandler<PhysicalButtonEventArgs>? PhysicalButtonPressed;
 
     /// <summary>
-    /// 查找所有 HID 音频设备
+    /// 创建控制器 (使用默认配置)
+    /// </summary>
+    public HidAudioController() : this(HidAudioConfig.Default)
+    {
+    }
+
+    /// <summary>
+    /// 创建控制器 (使用自定义配置)
+    /// </summary>
+    public HidAudioController(HidAudioConfig config)
+    {
+        _config = config;
+    }
+
+    /// <summary>
+    /// 查找所有 HID 音频设备 (使用默认配置的 VID/PID)
     /// </summary>
     public static List<HidDeviceInfo> FindAllHidAudioDevices()
     {
+        return FindAllHidAudioDevices(HidAudioConfig.Default.VendorId, HidAudioConfig.Default.ProductId);
+    }
+
+    /// <summary>
+    /// 查找所有 HID 音频设备
+    /// </summary>
+    public static List<HidDeviceInfo> FindAllHidAudioDevices(int vendorId, int productId)
+    {
         var devices = new List<HidDeviceInfo>();
         
-        var hidDevices = HidDevices.Enumerate(VendorId, ProductId)
+        var hidDevices = HidDevices.Enumerate(vendorId, productId)
             .Where(d => d.Capabilities.OutputReportByteLength > 0);
         
         foreach (var device in hidDevices)
@@ -80,7 +329,7 @@ public class HidAudioController : IAudioMuteController
 
     public IReadOnlyList<AudioDeviceInfo> EnumerateDevices()
     {
-        return FindAllHidAudioDevices()
+        return FindAllHidAudioDevices(_config.VendorId, _config.ProductId)
             .Select(d => d.ToAudioDeviceInfo())
             .ToList();
     }
@@ -133,9 +382,8 @@ public class HidAudioController : IAudioMuteController
         _lastMuteState = false;
         _lastVolume = GetVolumeFromSystem() ?? 1f;
         
-        // 连接后默认发送启用命令，同步设备状态
-        SendMuteCommand(false);
-        Console.WriteLine("已发送初始启用命令");
+        // 记录连接时间，用于忽略连接后的残留 HID 报告
+        _connectTime = DateTime.Now;
         
         return true;
     }
@@ -161,9 +409,47 @@ public class HidAudioController : IAudioMuteController
         }
     }
 
+    /// <summary>
+    /// 自动检测当前系统默认输入麦克风，匹配配置并连接
+    /// </summary>
+    public static HidAudioController? ConnectAuto()
+    {
+        // 方式1: 根据当前系统默认麦克风匹配配置
+        var defaultConfig = HidAudioConfigRegistry.GetDefaultMicrophoneConfig();
+        if (defaultConfig != null)
+        {
+            Console.WriteLine($"使用配置: {defaultConfig.Name}");
+            var controller = new HidAudioController(defaultConfig);
+            if (controller.ConnectToFirst())
+                return controller;
+            Console.WriteLine("方式1连接失败，尝试方式2...");
+            controller.Dispose();
+        }
+        
+        // 方式2: 扫描所有已注册设备
+        var devices = HidAudioConfigRegistry.ScanDevices();
+        
+        if (devices.Count == 0)
+        {
+            Console.WriteLine("未找到任何已注册的 HID 设备");
+            return null;
+        }
+        
+        var (config, devicePath) = devices[0];
+        Console.WriteLine($"使用配置: {config.Name}");
+        var controller2 = new HidAudioController(config);
+        
+        if (controller2.ConnectByPath(devicePath))
+            return controller2;
+        
+        Console.WriteLine("方式2连接失败");
+        controller2.Dispose();
+        return null;
+    }
+
     public bool ConnectToFirst()
     {
-        return ConnectByVidPid(VendorId, ProductId);
+        return ConnectByVidPid(_config.VendorId, _config.ProductId);
     }
 
     public bool ConnectByPath(string? devicePath)
@@ -204,9 +490,8 @@ public class HidAudioController : IAudioMuteController
         ConnectCoreAudioDevice();
         _lastMuteState = false;  // 默认启用状态
         
-        // 连接后默认发送启用命令，同步设备状态
-        SendMuteCommand(false);
-        Console.WriteLine("已发送初始启用命令");
+        // 记录连接时间，用于忽略连接后的残留 HID 报告
+        _connectTime = DateTime.Now;
         
         return true;
     }
@@ -221,35 +506,27 @@ public class HidAudioController : IAudioMuteController
             using var enumerator = new MMDeviceEnumerator();
             var captureDevices = enumerator.EnumerateAudioEndPoints(DataFlow.Capture, DeviceState.Active);
             
-            Console.WriteLine("查找对应的 Core Audio 设备...");
+            var keywords = _config.DeviceNameKeywords;
             
             // 查找匹配的设备
-            foreach (var device in captureDevices)
+            if (keywords != null && keywords.Length > 0)
             {
-                Console.WriteLine($"  发现设备: {device.FriendlyName}");
-                
-                // 通过设备名称或 VID/PID 匹配
-                if (device.FriendlyName?.Contains("Hamedal") == true ||
-                    device.FriendlyName?.Contains("Speak") == true ||
-                    device.FriendlyName?.Contains("A20") == true ||
-                    device.FriendlyName?.Contains("回音消除") == true)
+                foreach (var device in captureDevices)
                 {
-                    _audioDevice = device;
-                    Console.WriteLine($"  已匹配: {device.FriendlyName}");
-                    break;
+                    if (keywords.Any(k => device.FriendlyName?.Contains(k) == true))
+                    {
+                        _audioDevice = device;
+                        break;
+                    }
                 }
             }
             
             // 如果没找到，使用默认设备
-            if (_audioDevice == null)
-            {
-                _audioDevice = enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Communications);
-                Console.WriteLine($"  使用默认设备: {_audioDevice?.FriendlyName}");
-            }
+            _audioDevice ??= enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Communications);
         }
-        catch (Exception ex)
+        catch
         {
-            Console.WriteLine($"Core Audio 连接失败: {ex.Message}");
+            // Core Audio 连接失败不影响 HID 控制
         }
     }
 
@@ -337,21 +614,14 @@ public class HidAudioController : IAudioMuteController
     private bool? GetMuteFromSystem()
     {
         if (_audioDevice == null)
-        {
-            Console.WriteLine("[调试] _audioDevice 为空");
             return null;
-        }
         
         try
         {
-            var mute = _audioDevice.AudioEndpointVolume.Mute;
-            var volume = _audioDevice.AudioEndpointVolume.MasterVolumeLevelScalar;
-            Console.WriteLine($"[调试] Core Audio: 设备={_audioDevice.FriendlyName}, 静音={mute}, 音量={volume:P0}");
-            return mute;
+            return _audioDevice.AudioEndpointVolume.Mute;
         }
-        catch (Exception ex)
+        catch
         {
-            Console.WriteLine($"[调试] 读取 Core Audio 失败: {ex.Message}");
             return null;
         }
     }
@@ -403,8 +673,8 @@ public class HidAudioController : IAudioMuteController
         try
         {
             var reportData = new byte[_hidDevice.Capabilities.OutputReportByteLength];
-            reportData[0] = ReportId;
-            reportData[1] = mute ? MuteOnData : MuteOffData;
+            reportData[0] = _config.ReportId;
+            reportData[1] = mute ? _config.MuteOnData : _config.MuteOffData;
             
             _hidDevice.Write(reportData);
             return true;
@@ -434,8 +704,6 @@ public class HidAudioController : IAudioMuteController
             {
                 PollHidDevice();
             }, null, TimeSpan.FromMilliseconds(50), TimeSpan.FromMilliseconds(50));
-            
-            Console.WriteLine("已开始监听 HID 物理按键");
         }
     }
 
@@ -471,8 +739,6 @@ public class HidAudioController : IAudioMuteController
             
             if (report != null && report.Data != null && report.Data.Length > 0)
             {
-                Console.WriteLine($"[HID 输入] Report ID={report.ReportId}, Data={BitConverter.ToString(report.Data, 0, Math.Min(8, report.Data.Length))}");
-                
                 ParseHidReport(report.ReportId, report.Data);
             }
         }
@@ -487,16 +753,31 @@ public class HidAudioController : IAudioMuteController
     /// </summary>
     private void ParseHidReport(byte reportId, byte[] data)
     {
-        // Report ID=1 是按键事件通知
-        // Data=07 按键按下, Data=03 按键释放
-        
-        if (reportId == 1 && data.Length >= 1 && data[0] == 0x07) // 按键按下
+        // 忽略连接后短时间内的报告（可能是缓冲区残留数据）
+        var timeSinceConnect = (DateTime.Now - _connectTime).TotalMilliseconds;
+        if (timeSinceConnect < IgnoreReportsAfterConnectMs)
         {
+            return;
+        }
+        
+        // 使用配置中的按键报告 ID 和按键数据
+        if (reportId == _config.ButtonReportId && data.Length >= 1 && data[0] == _config.ButtonPressData)
+        {
+            // 防抖：检查距离上次按键的时间
+            var now = DateTime.Now;
+            var elapsed = (now - _lastButtonPressTime).TotalMilliseconds;
+            
+            if (elapsed < ButtonDebounceMs)
+            {
+                // 忽略太快的重复按键
+                return;
+            }
+            
+            _lastButtonPressTime = now;
+            
             // 硬件静音状态切换 - 维护本地状态
             _lastMuteState = !_lastMuteState;
             _lastVolume = GetVolumeFromSystem() ?? _lastVolume;
-            
-            Console.WriteLine($"[调试] 物理按键按下，切换本地状态: 静音={_lastMuteState}");
             
             // 触发事件，告知用户当前状态
             StateChanged?.Invoke(this, new AudioStateChangedEventArgs
