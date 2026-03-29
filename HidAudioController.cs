@@ -786,45 +786,13 @@ public class HidAudioController : IAudioMuteController
                 Volume = _lastVolume,
                 Device = ConnectedDevice
             });
-        }
-    }
-
-    /// <summary>
-    /// Core Audio 音量变化事件处理
-    /// </summary>
-    private void OnVolumeNotification(AudioVolumeNotificationData data)
-    {
-        if (!_isMonitoring)
-            return;
-        
-        bool changed = false;
-        
-        // 检测静音状态变化
-        if (data.Muted != _lastMuteState)
-        {
-            _lastMuteState = data.Muted;
             
-            // 同步 LED 状态
-            SendMuteCommand(data.Muted);
-            
-            changed = true;
-        }
-        
-        // 检测音量变化
-        if (Math.Abs(data.MasterVolume - _lastVolume) > 0.001f)
-        {
-            _lastVolume = data.MasterVolume;
-            changed = true;
-        }
-        
-        // 触发事件
-        if (changed)
-        {
-            StateChanged?.Invoke(this, new AudioStateChangedEventArgs
+            // 触发物理按钮事件
+            PhysicalButtonPressed?.Invoke(this, new PhysicalButtonEventArgs
             {
-                IsMuted = _lastMuteState,
-                Volume = _lastVolume,
-                Device = ConnectedDevice
+                ButtonType = PhysicalButtonType.Mute,
+                IsPressed = true,
+                NewMuteState = _lastMuteState
             });
         }
     }
