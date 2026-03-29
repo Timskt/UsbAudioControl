@@ -1,17 +1,27 @@
 using UsbAudioControl;
 
-Console.WriteLine("=== Hamedal Speak A20 静音控制 ===\n");
+Console.WriteLine("=== HID 音频设备静音控制 ===\n");
 
-using var controller = new HidAudioController();
-
-Console.WriteLine("连接设备...");
-if (!controller.ConnectToFirst())
+// 显示已注册的设备
+Console.WriteLine("已注册的设备配置:");
+foreach (var id in HidAudioConfigRegistry.GetRegisteredDeviceIds())
 {
-    Console.WriteLine("连接失败!");
+    var cfg = HidAudioConfigRegistry.GetConfig(id);
+    Console.WriteLine($"  {id} - {cfg?.Name}");
+}
+Console.WriteLine();
+
+// 自动检测当前系统麦克风并连接
+Console.WriteLine("检测当前系统麦克风...");
+var controller = HidAudioController.ConnectAuto();
+if (controller == null)
+{
+    Console.WriteLine("未找到匹配的设备配置!");
+    Console.WriteLine("请确保你的麦克风已在 HidAudioConfigRegistry 中注册");
     return;
 }
-
-Console.WriteLine($"已连接: {controller.ConnectedDevice?.Name}\n");
+Console.WriteLine($"已连接: {controller.ConnectedDevice?.Name}");
+Console.WriteLine($"配置: {controller.Config.Name} ({controller.Config.DeviceId})\n");
 
 // 订阅状态变化事件
 controller.StateChanged += (sender, e) =>
@@ -21,6 +31,7 @@ controller.StateChanged += (sender, e) =>
 
 // 开始监听
 controller.StartMonitoring();
+controller.SetMute(true);
 Console.WriteLine("已开始监听物理按键\n");
 
 Console.WriteLine("命令:");
