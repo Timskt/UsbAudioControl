@@ -19,10 +19,6 @@ public class HidAudioController : IAudioMuteController
     private readonly object _lock = new();
     private System.Threading.Timer? _hidPollingTimer;
     private readonly HidAudioConfig _config;
-    private DateTime _lastButtonPressTime = DateTime.MinValue;
-    private const int ButtonDebounceMs = 300; // 按键防抖时间 (毫秒)
-    private DateTime _connectTime = DateTime.MinValue;
-    private const int IgnoreReportsAfterConnectMs = 500; // 连接后忽略报告的时间 (毫秒)
 
     /// <summary>
     /// 当前配置
@@ -154,8 +150,6 @@ public class HidAudioController : IAudioMuteController
         _lastMuteState = false;
         _lastVolume = GetVolumeFromSystem() ?? 1f;
         
-        // 记录连接时间，用于忽略连接后的残留 HID 报告
-        _connectTime = DateTime.Now;
         
         return true;
     }
@@ -262,8 +256,6 @@ public class HidAudioController : IAudioMuteController
         ConnectCoreAudioDevice();
         _lastMuteState = false;  // 默认启用状态
         
-        // 记录连接时间，用于忽略连接后的残留 HID 报告
-        _connectTime = DateTime.Now;
         
         return true;
     }
@@ -525,28 +517,10 @@ public class HidAudioController : IAudioMuteController
     /// </summary>
     private void ParseHidReport(byte reportId, byte[] data)
     {
-        // 忽略连接后短时间内的报告（可能是缓冲区残留数据）
-        var timeSinceConnect = (DateTime.Now - _connectTime).TotalMilliseconds;
-        if (timeSinceConnect < IgnoreReportsAfterConnectMs)
-        {
-            return;
-        }
         
         // 使用配置中的按键报告 ID 和按键数据
         if (reportId == _config.ButtonReportId && data.Length >= 1 && data[0] == _config.ButtonPressData)
         {
-            // 防抖：检查距离上次按键的时间
-            var now = DateTime.Now;
-            var elapsed = (now - _lastButtonPressTime).TotalMilliseconds;
-            
-            if (elapsed < ButtonDebounceMs)
-            {
-                // 忽略太快的重复按键
-                return;
-            }
-            
-            _lastButtonPressTime = now;
-            
             // 硬件静音状态切换 - 维护本地状态
             _lastMuteState = !_lastMuteState;
             _lastVolume = GetVolumeFromSystem() ?? _lastVolume;
