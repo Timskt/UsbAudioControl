@@ -81,7 +81,28 @@ while (true)
 
         case "q":
             Console.WriteLine("退出");
-            return;
+            controller.Dispose();
+            controller = HidAudioController.ConnectAuto();
+            if (controller == null)
+            {
+                Console.WriteLine("未找到匹配的设备配置!");
+                Console.WriteLine("请确保你的麦克风已在 HidAudioConfigRegistry 中注册");
+                return;
+            }
+            Console.WriteLine($"已连接: {controller.ConnectedDevice?.Name}");
+            Console.WriteLine($"配置: {controller.Config.Name} ({controller.Config.DeviceId})\n");
+
+// 订阅状态变化事件
+            controller.StateChanged += (sender, e) =>
+            {
+                Console.WriteLine($"\n[状态变化] 静音={e.IsMuted}, 音量={e.Volume:P0}");
+            };
+
+// 开始监听
+            controller.StartMonitoring();
+            controller.SetMute(true);
+            // return;
+            break;
 
         default:
             Console.WriteLine($"未知命令: {cmd}");
@@ -90,3 +111,5 @@ while (true)
     
     Console.WriteLine();
 }
+
+

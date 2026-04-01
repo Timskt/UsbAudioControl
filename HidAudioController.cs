@@ -1,5 +1,6 @@
 using HidLibrary;
 using NAudio.CoreAudioApi;
+using System.Collections.Concurrent;
 
 namespace UsbAudioControl;
 
@@ -17,8 +18,13 @@ public class HidAudioController : IAudioMuteController
     private bool _lastMuteState;
     private float _lastVolume;
     private readonly object _lock = new();
-    private System.Threading.Timer? _hidPollingTimer;
+    private CancellationTokenSource? _pollingCts;
+    private Task? _pollingTask;
     private readonly HidAudioConfig _config;
+    private readonly ConcurrentQueue<byte[]> _writeQueue = new();
+    private ManualResetEventSlim? _writeSignal = new(false);
+    private Task? _writeTask;
+    private CancellationTokenSource? _writeCts;
 
     /// <summary>
     /// 当前配置
@@ -146,10 +152,12 @@ public class HidAudioController : IAudioMuteController
         // 连接对应的 Core Audio 设备
         ConnectCoreAudioDevice();
         
-        // 初始化状态 - 默认启用
+        // 初始化状态
         _lastMuteState = false;
         _lastVolume = GetVolumeFromSystem() ?? 1f;
         
+        // 启动写入线程
+        StartWriteThread();
         
         return true;
     }
@@ -254,8 +262,11 @@ public class HidAudioController : IAudioMuteController
         };
         
         ConnectCoreAudioDevice();
-        _lastMuteState = false;  // 默认启用状态
+        _lastMuteState = false;
+        _lastVolume = GetVolumeFromSystem() ?? 0.5f;
         
+        // 启动写入线程
+        StartWriteThread();
         
         return true;
     }
@@ -294,21 +305,135 @@ public class HidAudioController : IAudioMuteController
         }
     }
 
+    /// <summary>
+    /// 启动异步写入线程
+    /// </summary>
+    private void StartWriteThread()
+    {
+        _writeCts = new CancellationTokenSource();
+        _writeTask = Task.Run(async () => WriteThread(_writeCts.Token));
+    }
+
+    /// <summary>
+    /// 写入线程
+    /// </summary>
+    private async Task WriteThread(CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested && _hidDevice?.IsConnected == true)
+        {
+            try
+            {
+                // 等待写入信号或取消
+                await Task.Delay(10, cancellationToken);
+                
+                if (_writeQueue.TryDequeue(out var data))
+                {
+                    _hidDevice.Write(data);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+            catch
+            {
+                // 写入失败，继续尝试
+            }
+        }
+    }
+
     public void Disconnect()
     {
         lock (_lock)
         {
-            StopMonitoring();
-            _audioDevice?.Dispose();
-            _audioDevice = null;
-            
-            if (_hidDevice != null)
+            try
             {
-                _hidDevice.CloseDevice();
-                _hidDevice.Dispose();
-                _hidDevice = null;
+                StopMonitoring();
+                
+                // 停止写入线程
+                _writeCts?.Cancel();
+                if (_writeTask != null)
+                {
+                    try
+                    {
+                        if (!_writeTask.Wait(500))
+                        {
+                            _writeTask.Dispose();
+                        }
+                    }
+                    catch
+                    {
+                        // 忽略异常
+                    }
+                }
+                _writeCts?.Dispose();
+                _writeCts = null;
+                _writeTask = null;
+                
+                _audioDevice?.Dispose();
+                _audioDevice = null;
+                
+                if (_hidDevice != null)
+                {
+                    var device = _hidDevice;
+                    _hidDevice = null; // 立即清空引用
+                    
+                    // 在后台线程中安全关闭设备
+                    Task.Run(() =>
+                    {
+                        try
+                        {
+                            if (device.IsConnected)
+                            {
+                                // 设置超时关闭
+                                var closeTask = Task.Run(() =>
+                                {
+                                    try
+                                    {
+                                        device.CloseDevice();
+                                    }
+                                    catch
+                                    {
+                                        // 忽略关闭错误
+                                    }
+                                });
+                                
+                                if (!closeTask.Wait(200)) // 最多等待200ms
+                                {
+                                    // 超时，强制继续
+                                }
+                            }
+                        }
+                        catch
+                        {
+                            // 忽略错误
+                        }
+                        finally
+                        {
+                            try
+                            {
+                                device.Dispose();
+                            }
+                            catch
+                            {
+                                // 忽略释放错误
+                            }
+                        }
+                    }).Wait(1000); // 最多等待1秒完成整个清理
+                }
+                
+                _connectedDeviceInfo = null;
+                
+                // 清空写入队列
+                while (_writeQueue.TryDequeue(out _)) { }
             }
-            _connectedDeviceInfo = null;
+            catch
+            {
+                // 确保无论如何都要清空引用
+                _hidDevice = null;
+                _audioDevice = null;
+                _connectedDeviceInfo = null;
+            }
         }
     }
 
@@ -440,7 +565,8 @@ public class HidAudioController : IAudioMuteController
             reportData[0] = _config.ReportId;
             reportData[1] = mute ? _config.MuteOnData : _config.MuteOffData;
             
-            _hidDevice.Write(reportData);
+            // 通过队列发送，避免阻塞
+            _writeQueue.Enqueue(reportData);
             return true;
         }
         catch
@@ -461,13 +587,44 @@ public class HidAudioController : IAudioMuteController
             
             _isMonitoring = true;
             _lastMuteState = GetMuteFromSystem() ?? false;
-            _lastVolume = GetVolumeFromSystem() ?? 0f;
+            _lastVolume = GetVolumeFromSystem() ?? 0.5f;
             
-            // 使用轮询线程监听 HID 输入报告（监听物理按键）
-            _hidPollingTimer = new System.Threading.Timer(_ =>
+            // 使用 CancellationToken 控制轮询
+            _pollingCts = new CancellationTokenSource();
+            _pollingTask = Task.Run(async () => await PollHidDeviceAsync(_pollingCts.Token));
+        }
+    }
+
+    /// <summary>
+    /// 异步轮询 HID 设备
+    /// </summary>
+    private async Task PollHidDeviceAsync(CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested && 
+               _isMonitoring && 
+               _hidDevice != null && 
+               _hidDevice.IsConnected)
+        {
+            try
             {
-                PollHidDevice();
-            }, null, TimeSpan.FromMilliseconds(50), TimeSpan.FromMilliseconds(50));
+                await Task.Delay(50, cancellationToken);
+                
+                // 非阻塞读取
+                var report = _hidDevice.ReadReport(0);
+                
+                if (report != null && report.Data != null && report.Data.Length > 0)
+                {
+                    ParseHidReport(report.ReportId, report.Data);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+            catch
+            {
+                // 忽略读取错误
+            }
         }
     }
 
@@ -483,32 +640,27 @@ public class HidAudioController : IAudioMuteController
             
             _isMonitoring = false;
             
-            _hidPollingTimer?.Dispose();
-            _hidPollingTimer = null;
-        }
-    }
-
-    /// <summary>
-    /// 轮询 HID 设备读取输入报告
-    /// </summary>
-    private void PollHidDevice()
-    {
-        if (!_isMonitoring || _hidDevice == null || !_hidDevice.IsConnected)
-            return;
-        
-        try
-        {
-            // 非阻塞读取
-            var report = _hidDevice.ReadReport(0); // 0 = 非阻塞
+            // 取消轮询任务
+            _pollingCts?.Cancel();
             
-            if (report != null && report.Data != null && report.Data.Length > 0)
+            try
             {
-                ParseHidReport(report.ReportId, report.Data);
+                if (_pollingTask != null && !_pollingTask.IsCompleted)
+                {
+                    if (!_pollingTask.Wait(200)) // 等待最多200ms
+                    {
+                        // 超时，继续执行
+                    }
+                }
             }
-        }
-        catch
-        {
-            // 忽略读取错误
+            catch
+            {
+                // 忽略异常
+            }
+            
+            _pollingCts?.Dispose();
+            _pollingCts = null;
+            _pollingTask = null;
         }
     }
 
@@ -517,15 +669,14 @@ public class HidAudioController : IAudioMuteController
     /// </summary>
     private void ParseHidReport(byte reportId, byte[] data)
     {
-        
         // 使用配置中的按键报告 ID 和按键数据
         if (reportId == _config.ButtonReportId && data.Length >= 1 && data[0] == _config.ButtonPressData)
         {
-            // 硬件静音状态切换 - 维护本地状态
+            // 硬件静音状态切换
             _lastMuteState = !_lastMuteState;
             _lastVolume = GetVolumeFromSystem() ?? _lastVolume;
             
-            // 触发事件，告知用户当前状态
+            // 触发事件
             StateChanged?.Invoke(this, new AudioStateChangedEventArgs
             {
                 IsMuted = _lastMuteState,
@@ -540,6 +691,9 @@ public class HidAudioController : IAudioMuteController
                 IsPressed = true,
                 NewMuteState = _lastMuteState
             });
+            
+            // 同步更新 LED
+            SetMuteLed(_lastMuteState);
         }
     }
 
@@ -548,8 +702,24 @@ public class HidAudioController : IAudioMuteController
         if (_disposed)
             return;
         
-        Disconnect();
-        _disposed = true;
+        try
+        {
+            Disconnect();
+            
+            // 确保所有资源都被清理
+            _writeSignal?.Dispose();
+            _writeSignal = null;
+            
+            _pollingCts?.Dispose();
+            _writeCts?.Dispose();
+            
+            _pollingTask?.Dispose();
+            _writeTask?.Dispose();
+        }
+        finally
+        {
+            _disposed = true;
+        }
     }
 }
 
